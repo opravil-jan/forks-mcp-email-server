@@ -257,6 +257,28 @@ class ArchiveCommand:
         validate_mailbox_name(self.source_mailbox)
 
 
+@dataclass(frozen=True)
+class MarkAsSpamCommand:
+    account_name: str
+    email_ids: tuple[str, ...]
+    source_mailbox: str = "INBOX"
+
+    def validate(self) -> None:
+        _validate_account_name(self.account_name)
+        _validate_email_ids(self.email_ids)
+        validate_mailbox_name(self.source_mailbox)
+
+
+@dataclass(frozen=True)
+class MarkAsHamCommand:
+    account_name: str
+    email_ids: tuple[str, ...]
+
+    def validate(self) -> None:
+        _validate_account_name(self.account_name)
+        _validate_email_ids(self.email_ids)
+
+
 def _is_message_id_dot_atom(value: str) -> bool:
     """Return whether value is conservative RFC 5322/RFC 6532 dot-atom text."""
     return all(
@@ -443,6 +465,8 @@ class MutationProvider(Protocol):
     ) -> BatchMutationOutcome: ...
 
     async def find_archive_mailbox(self, source_mailbox: str) -> str: ...
+
+    async def find_junk_mailbox(self, source_mailbox: str) -> str: ...
 
     async def send(
         self,
@@ -1095,6 +1119,18 @@ class ArchiveMutationOutcome:
     archive_mailbox: str
 
 
+@dataclass(frozen=True)
+class MarkAsSpamMutationOutcome:
+    batch: BatchMutationOutcome
+    junk_mailbox: str  # mailbox the messages were moved TO
+
+
+@dataclass(frozen=True)
+class MarkAsHamMutationOutcome:
+    batch: BatchMutationOutcome
+    junk_mailbox: str  # mailbox the messages were moved FROM
+
+
 class ArchiveService(_MutationWorkflow):
     async def execute(self, command: ArchiveCommand) -> ArchiveMutationOutcome:
         command.validate()
@@ -1137,6 +1173,94 @@ class ArchiveService(_MutationWorkflow):
                 "reconciliation_needed": outcome.reconciliation_needed,
             },
             "archive_mailbox": archive_mailbox,
+        })
+        return result
+
+
+class MarkAsSpamService(_MutationWorkflow):
+    async def execute(self, command: MarkAsSpamCommand) -> MarkAsSpamMutationOutcome:
+        command.validate()
+        account = self._resolve(command.account_name)
+        discovery = self._open(account)
+        try:
+            junk_mailbox = await _bounded_provider_effect(discovery.provider.find_junk_mailbox(command.source_mailbox))
+        except TimeoutError:
+            raise MutationProviderError("junk mailbox discovery timed out") from None
+        move = MoveCommand(
+            account_name=command.account_name,
+            email_ids=command.email_ids,
+            source_mailbox=command.source_mailbox,
+            destination_mailbox=junk_mailbox,
+        )
+        move.validate()
+        # Re-resolve selected-mode authority immediately before the move effect.
+        access = self._providers.open(
+            command.account_name,
+            expected_mode=account.mode,
+            purpose="incoming",
+        )
+        try:
+            outcome = _validate_batch_result(await _bounded_provider_effect(access.provider.move(move, access.account)))
+        except TimeoutError:
+            outcome = _validate_batch_result(_timeout_batch(command.email_ids))
+        if outcome.effect_may_have_started:
+            invalidated = await self._invalidate(access.account, (command.source_mailbox, junk_mailbox))
+            outcome = _validate_batch_result(
+                BatchMutationOutcome(
+                    outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+                )
+            )
+        result = MarkAsSpamMutationOutcome(outcome, junk_mailbox)
+        _validate_result_payload({
+            "batch": {
+                "outcomes": [_outcome_payload(item) for item in outcome.outcomes],
+                "reconciliation_needed": outcome.reconciliation_needed,
+            },
+            "junk_mailbox": junk_mailbox,
+        })
+        return result
+
+
+class MarkAsHamService(_MutationWorkflow):
+    async def execute(self, command: MarkAsHamCommand) -> MarkAsHamMutationOutcome:
+        command.validate()
+        account = self._resolve(command.account_name)
+        discovery = self._open(account)
+        try:
+            junk_mailbox = await _bounded_provider_effect(discovery.provider.find_junk_mailbox("INBOX"))
+        except TimeoutError:
+            raise MutationProviderError("junk mailbox discovery timed out") from None
+        move = MoveCommand(
+            account_name=command.account_name,
+            email_ids=command.email_ids,
+            source_mailbox=junk_mailbox,
+            destination_mailbox="INBOX",
+        )
+        move.validate()
+        # Re-resolve selected-mode authority immediately before the move effect.
+        access = self._providers.open(
+            command.account_name,
+            expected_mode=account.mode,
+            purpose="incoming",
+        )
+        try:
+            outcome = _validate_batch_result(await _bounded_provider_effect(access.provider.move(move, access.account)))
+        except TimeoutError:
+            outcome = _validate_batch_result(_timeout_batch(command.email_ids))
+        if outcome.effect_may_have_started:
+            invalidated = await self._invalidate(access.account, (junk_mailbox, "INBOX"))
+            outcome = _validate_batch_result(
+                BatchMutationOutcome(
+                    outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+                )
+            )
+        result = MarkAsHamMutationOutcome(outcome, junk_mailbox)
+        _validate_result_payload({
+            "batch": {
+                "outcomes": [_outcome_payload(item) for item in outcome.outcomes],
+                "reconciliation_needed": outcome.reconciliation_needed,
+            },
+            "junk_mailbox": junk_mailbox,
         })
         return result
 
@@ -1220,6 +1344,8 @@ class MutationServices:
     delete: DeleteService
     move: MoveService
     archive: ArchiveService
+    mark_as_spam: MarkAsSpamService
+    mark_as_ham: MarkAsHamService
     send: SendService
     forward: ForwardService
 
@@ -1240,6 +1366,8 @@ class MutationServices:
             delete=DeleteService(*arguments),
             move=MoveService(*arguments),
             archive=ArchiveService(*arguments),
+            mark_as_spam=MarkAsSpamService(*arguments),
+            mark_as_ham=MarkAsHamService(*arguments),
             send=SendService(*arguments),
             forward=ForwardService(*arguments),
         )

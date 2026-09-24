@@ -1666,6 +1666,105 @@
             }
         },
         {
+            "name": "mark_as_spam",
+            "description": "Mark one or more emails as spam by moving them to the account's Junk folder, auto-detected via the RFC 6154 \\Junk flag (falling back to common names like Junk, Spam, or [Gmail]/Spam). The spam/ham judgment itself is made by the caller; this tool only performs the move. It does not train the provider's spam filter, report the sender, or affect sender reputation. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "email_ids": {
+                        "description": "List of email_id to mark as spam (obtained from list_emails_metadata).",
+                        "items": {
+                            "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Email Ids",
+                        "type": "array"
+                    },
+                    "mailbox": {
+                        "default": "INBOX",
+                        "description": "The source mailbox containing the emails.",
+                        "maxLength": 1024,
+                        "title": "Mailbox",
+                        "type": "string"
+                    }
+                },
+                "required": ["account_name", "email_ids"],
+                "title": "mark_as_spamArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "mark_as_spamOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        },
+        {
+            "name": "mark_as_ham",
+            "description": "Mark one or more emails as ham (not spam) by moving them out of the account's Junk folder, auto-detected the same way mark_as_spam finds it, back to INBOX. The spam/ham judgment itself is made by the caller; this tool only performs the move. It does not train the provider's spam filter or affect sender reputation. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "email_ids": {
+                        "description": "List of email_id to mark as ham (obtained from list_emails_metadata).",
+                        "items": {
+                            "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Email Ids",
+                        "type": "array"
+                    }
+                },
+                "required": ["account_name", "email_ids"],
+                "title": "mark_as_hamArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "mark_as_hamOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        },
+        {
             "name": "list_mailboxes",
             "description": "List available mailboxes/folders for an email account. Returns folder names, hierarchy delimiters, and flags. Useful for discovering folder names before moving emails.",
             "inputSchema": {

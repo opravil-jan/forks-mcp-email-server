@@ -364,6 +364,7 @@ _IMAP_CAPABILITY_TIMEOUT_SECONDS = 30.0
 
 # Common Archive folder names, used as a fallback when no RFC 6154 \Archive flag is found.
 _ARCHIVE_FOLDER_CANDIDATES = ("Archive", "Archives", "[Gmail]/All Mail")
+_JUNK_FOLDER_CANDIDATES = ("Junk", "Spam", "[Gmail]/Spam", "Junk E-mail", "Junk Email")
 
 
 # RFC 3501 atoms exclude controls and these protocol-special characters.
@@ -4013,6 +4014,20 @@ class ClassicEmailHandler(EmailHandler):
             archive_folder = names_by_lowercase.get(candidate.lower())
             if archive_folder is not None:
                 return archive_folder
+        return None
+
+    async def _find_junk_folder(self) -> str | None:
+        """Locate the Junk folder via the RFC 6154 ``\\Junk`` flag, then common names."""
+        mailboxes = await self.incoming_client.list_mailboxes()
+        for mailbox_info in mailboxes:
+            if any(flag.lstrip("\\").lower() == "junk" for flag in mailbox_info.flags):
+                return mailbox_info.name
+
+        names_by_lowercase = {mailbox_info.name.lower(): mailbox_info.name for mailbox_info in mailboxes}
+        for candidate in _JUNK_FOLDER_CANDIDATES:
+            junk_folder = names_by_lowercase.get(candidate.lower())
+            if junk_folder is not None:
+                return junk_folder
         return None
 
     async def archive_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str], str]:

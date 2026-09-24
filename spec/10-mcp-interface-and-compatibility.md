@@ -96,7 +96,7 @@ The stable mail catalog may expose these compatibility families:
 - flag/read-state mutations;
 - semantic keyword discovery, filtering, and explicitly authorized tag
   mutations;
-- save/append, move, archive, and delete;
+- save/append, move, archive, spam/ham marking, and delete;
 - SMTP send and sent-copy behavior.
 
 Exact names and schemas are owned by the checked contract snapshot. Their

@@ -22,6 +22,8 @@ from mcp_email_server.app import (
     list_email_tags,
     list_emails_metadata,
     list_mailboxes,
+    mark_as_ham,
+    mark_as_spam,
     mark_emails_as_read,
     move_emails,
     save_to_mailbox,
@@ -36,6 +38,8 @@ from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     ArchiveMutationOutcome,
     BatchMutationOutcome,
+    MarkAsHamMutationOutcome,
+    MarkAsSpamMutationOutcome,
     RecipientPolicyDeniedError,
     SendMutationOutcome,
     SentCopyMutationOutcome,
@@ -411,6 +415,8 @@ class TestMcpTools:
             "mark_emails_as_read",
             "move_emails",
             "archive_emails",
+            "mark_as_spam",
+            "mark_as_ham",
         ):
             ids = tools[tool_name]["email_ids"]
             assert ids["maxItems"] == APPLICATION_LIMITS.mutation_uids
@@ -691,6 +697,48 @@ class TestMcpTools:
         with patch("mcp_email_server.app.archive_emails_command", command_handler):
             result = await archive_emails("test_account", ["12345", "12346"])
         assert result == ("Archive result [succeeded: 12345; failed: 12346; mailbox: [Gmail]/All Mail]")
+
+    @pytest.mark.asyncio
+    async def test_mark_as_spam(self):
+        command_handler = AsyncMock(
+            return_value=MarkAsSpamMutationOutcome(_batch_outcome(succeeded=("12345", "12346")), "Junk")
+        )
+        with patch("mcp_email_server.app.mark_as_spam_command", command_handler):
+            result = await mark_as_spam("test_account", ["12345", "12346"])
+        assert result == "Successfully marked 2 email(s) as spam (moved to Junk)"
+        assert command_handler.await_args.args[0].source_mailbox == "INBOX"
+
+    @pytest.mark.asyncio
+    async def test_mark_as_spam_with_failures(self):
+        command_handler = AsyncMock(
+            return_value=MarkAsSpamMutationOutcome(
+                _batch_outcome(succeeded=("12345",), failed=("12346",)),
+                "[Gmail]/Spam",
+            )
+        )
+        with patch("mcp_email_server.app.mark_as_spam_command", command_handler):
+            result = await mark_as_spam("test_account", ["12345", "12346"])
+        assert result == "Mark-as-spam result [succeeded: 12345; failed: 12346; mailbox: [Gmail]/Spam]"
+
+    @pytest.mark.asyncio
+    async def test_mark_as_ham(self):
+        command_handler = AsyncMock(return_value=MarkAsHamMutationOutcome(_batch_outcome(succeeded=("12345",)), "Junk"))
+        with patch("mcp_email_server.app.mark_as_ham_command", command_handler):
+            result = await mark_as_ham("test_account", ["12345"])
+        assert result == "Successfully marked 1 email(s) as ham (moved from Junk to INBOX)"
+        assert command_handler.await_args.args[0].email_ids == ("12345",)
+
+    @pytest.mark.asyncio
+    async def test_mark_as_ham_with_failures(self):
+        command_handler = AsyncMock(
+            return_value=MarkAsHamMutationOutcome(
+                _batch_outcome(succeeded=("12345",), failed=("12346",)),
+                "Junk",
+            )
+        )
+        with patch("mcp_email_server.app.mark_as_ham_command", command_handler):
+            result = await mark_as_ham("test_account", ["12345", "12346"])
+        assert result == "Mark-as-ham result [succeeded: 12345; failed: 12346; mailbox: Junk]"
 
     @pytest.mark.asyncio
     async def test_move_emails_with_source_mailbox(self):

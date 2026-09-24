@@ -785,6 +785,79 @@ class TestClassicHandlerArchiveEmails:
         mock_move.assert_not_called()
 
 
+class TestClassicHandlerFindJunkFolder:
+    """Tests for ClassicEmailHandler._find_junk_folder (Junk-folder detection)."""
+
+    @pytest.mark.asyncio
+    async def test_junk_folder_uses_rfc6154_flag(self, classic_handler):
+        """The Junk folder is detected via the RFC 6154 \\Junk flag."""
+        mailboxes = [
+            MailboxInfo(name="INBOX", delimiter="/", flags=["\\HasNoChildren"]),
+            MailboxInfo(name="Bulk Mail", delimiter="/", flags=["\\Junk", "\\HasNoChildren"]),
+        ]
+        mock_list = AsyncMock(return_value=mailboxes)
+
+        with patch.object(classic_handler.incoming_client, "list_mailboxes", mock_list):
+            junk_folder = await classic_handler._find_junk_folder()
+
+        assert junk_folder == "Bulk Mail"
+
+    @pytest.mark.asyncio
+    async def test_junk_folder_falls_back_to_common_name(self, classic_handler):
+        """Without a \\Junk flag, fall back to a common folder name."""
+        mailboxes = [
+            MailboxInfo(name="INBOX", delimiter="/", flags=[]),
+            MailboxInfo(name="Spam", delimiter="/", flags=["\\HasNoChildren"]),
+        ]
+        mock_list = AsyncMock(return_value=mailboxes)
+
+        with patch.object(classic_handler.incoming_client, "list_mailboxes", mock_list):
+            junk_folder = await classic_handler._find_junk_folder()
+
+        assert junk_folder == "Spam"
+
+    @pytest.mark.asyncio
+    async def test_junk_folder_fallback_preserves_server_mailbox_case(self, classic_handler):
+        """Common folder-name fallback is case-insensitive but preserves the server's actual mailbox name."""
+        mailboxes = [
+            MailboxInfo(name="INBOX", delimiter="/", flags=[]),
+            MailboxInfo(name="junk", delimiter="/", flags=[]),
+        ]
+        mock_list = AsyncMock(return_value=mailboxes)
+
+        with patch.object(classic_handler.incoming_client, "list_mailboxes", mock_list):
+            junk_folder = await classic_handler._find_junk_folder()
+
+        assert junk_folder == "junk"
+
+    @pytest.mark.asyncio
+    async def test_junk_folder_checks_candidates_in_order(self, classic_handler):
+        """Earlier candidate names in _JUNK_FOLDER_CANDIDATES win over later ones."""
+        # _JUNK_FOLDER_CANDIDATES order is ("Junk", "Spam", "[Gmail]/Spam", "Junk E-mail", "Junk Email"),
+        # so "Spam" must win over "Junk E-mail" even though neither is literally named "Junk".
+        mailboxes = [
+            MailboxInfo(name="INBOX", delimiter="/", flags=[]),
+            MailboxInfo(name="Junk E-mail", delimiter="/", flags=[]),
+            MailboxInfo(name="Spam", delimiter="/", flags=[]),
+        ]
+        mock_list = AsyncMock(return_value=mailboxes)
+
+        with patch.object(classic_handler.incoming_client, "list_mailboxes", mock_list):
+            junk_folder = await classic_handler._find_junk_folder()
+
+        assert junk_folder == "Spam"
+
+    @pytest.mark.asyncio
+    async def test_junk_folder_returns_none_when_not_found(self, classic_handler):
+        """None is returned when no Junk folder can be found."""
+        mock_list = AsyncMock(return_value=[MailboxInfo(name="INBOX", delimiter="/", flags=[])])
+
+        with patch.object(classic_handler.incoming_client, "list_mailboxes", mock_list):
+            junk_folder = await classic_handler._find_junk_folder()
+
+        assert junk_folder is None
+
+
 class TestClassicHandlerListMailboxes:
     """Tests for ClassicEmailHandler.list_mailboxes delegation."""
 

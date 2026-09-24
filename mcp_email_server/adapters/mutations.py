@@ -172,6 +172,12 @@ class ClassicMutationProvider:
             )
         return archive_mailbox
 
+    async def find_junk_mailbox(self, source_mailbox: str) -> str:
+        junk_mailbox = await _bounded_mutation_call(self._handler._find_junk_folder())
+        if junk_mailbox is None or junk_mailbox == source_mailbox:
+            raise ValueError("No distinct Junk folder found (looked for the RFC 6154 \\Junk flag and common names)")
+        return junk_mailbox
+
     async def _submit(
         self,
         command: ComposeCommand,
