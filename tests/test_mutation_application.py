@@ -446,6 +446,78 @@ async def test_mark_as_spam_discovery_timeout_raises_provider_error(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_mark_as_spam_reports_failed_for_a_stale_email_id() -> None:
+    """A second mark_as_spam call on an already-moved UID must not crash; the move
+    outcome (whatever the provider reports for a UID no longer in the source
+    mailbox) propagates as-is, and a fully-failed batch does not invalidate
+    mailboxes it never touched."""
+    provider = MagicMock()
+    provider.find_junk_mailbox = AsyncMock(return_value="Junk")
+    provider.move = AsyncMock(return_value=_batch(TargetMutationOutcome("11", "failed", "not-found")))
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.mark_as_spam.execute(MarkAsSpamCommand("primary", ("11",)))
+
+    assert result.batch.targets("failed") == ["11"]
+    assert result.junk_mailbox == "Junk"
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_as_ham_reports_failed_for_a_stale_email_id() -> None:
+    provider = MagicMock()
+    provider.find_junk_mailbox = AsyncMock(return_value="Junk")
+    provider.move = AsyncMock(return_value=_batch(TargetMutationOutcome("11", "failed", "not-found")))
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.mark_as_ham.execute(MarkAsHamCommand("primary", ("11",)))
+
+    assert result.batch.targets("failed") == ["11"]
+    assert result.junk_mailbox == "Junk"
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_as_spam_move_timeout_is_unknown_and_never_replayed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.01),
+    )
+    provider = MagicMock()
+    provider.find_junk_mailbox = AsyncMock(return_value="Junk")
+    provider.move = AsyncMock(side_effect=_hang_provider)
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.mark_as_spam.execute(MarkAsSpamCommand("primary", ("11",)))
+
+    assert result.batch.targets("unknown") == ["11"]
+    assert result.batch.reconciliation_needed is True
+    provider.move.assert_awaited_once()
+    projection.invalidate.assert_awaited_once_with(("INBOX", "Junk"))
+
+
+@pytest.mark.asyncio
+async def test_mark_as_ham_move_timeout_is_unknown_and_never_replayed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.01),
+    )
+    provider = MagicMock()
+    provider.find_junk_mailbox = AsyncMock(return_value="Junk")
+    provider.move = AsyncMock(side_effect=_hang_provider)
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.mark_as_ham.execute(MarkAsHamCommand("primary", ("11",)))
+
+    assert result.batch.targets("unknown") == ["11"]
+    assert result.batch.reconciliation_needed is True
+    provider.move.assert_awaited_once()
+    projection.invalidate.assert_awaited_once_with(("Junk", "INBOX"))
+
+
+@pytest.mark.asyncio
 async def test_send_preserves_partial_delivery_and_separate_sent_copy() -> None:
     provider = MagicMock()
     sent_message = object()
