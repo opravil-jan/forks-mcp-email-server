@@ -273,13 +273,10 @@ class MarkAsSpamCommand:
 class MarkAsHamCommand:
     account_name: str
     email_ids: tuple[str, ...]
-    source_mailbox: str | None = None
 
     def validate(self) -> None:
         _validate_account_name(self.account_name)
         _validate_email_ids(self.email_ids)
-        if self.source_mailbox is not None:
-            validate_mailbox_name(self.source_mailbox)
 
 
 def _is_message_id_dot_atom(value: str) -> bool:
@@ -1228,14 +1225,11 @@ class MarkAsHamService(_MutationWorkflow):
     async def execute(self, command: MarkAsHamCommand) -> MarkAsHamMutationOutcome:
         command.validate()
         account = self._resolve(command.account_name)
-        if command.source_mailbox is not None:
-            junk_mailbox = command.source_mailbox
-        else:
-            discovery = self._open(account)
-            try:
-                junk_mailbox = await _bounded_provider_effect(discovery.provider.find_junk_mailbox("INBOX"))
-            except TimeoutError:
-                raise MutationProviderError("junk mailbox discovery timed out") from None
+        discovery = self._open(account)
+        try:
+            junk_mailbox = await _bounded_provider_effect(discovery.provider.find_junk_mailbox("INBOX"))
+        except TimeoutError:
+            raise MutationProviderError("junk mailbox discovery timed out") from None
         move = MoveCommand(
             account_name=command.account_name,
             email_ids=command.email_ids,

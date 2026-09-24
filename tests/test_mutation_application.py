@@ -427,23 +427,6 @@ async def test_mark_as_ham_auto_detects_junk_folder_as_source() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mark_as_ham_uses_explicit_source_mailbox_without_discovery() -> None:
-    provider = MagicMock()
-    provider.find_junk_mailbox = AsyncMock(side_effect=AssertionError("must not auto-detect"))
-    provider.move = AsyncMock(return_value=_batch(TargetMutationOutcome("11", "succeeded")))
-    services, _, _, projection = _services(provider=provider)
-
-    result = await services.mark_as_ham.execute(MarkAsHamCommand("primary", ("11",), source_mailbox="Suspected"))
-
-    assert result.junk_mailbox == "Suspected"
-    provider.find_junk_mailbox.assert_not_awaited()
-    move_command = provider.move.await_args.args[0]
-    assert move_command.source_mailbox == "Suspected"
-    assert move_command.destination_mailbox == "INBOX"
-    projection.invalidate.assert_awaited_once_with(("Suspected", "INBOX"))
-
-
-@pytest.mark.asyncio
 async def test_mark_as_spam_discovery_timeout_raises_provider_error(monkeypatch) -> None:
     monkeypatch.setattr(
         mutations_module,

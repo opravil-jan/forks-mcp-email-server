@@ -1667,7 +1667,7 @@
         },
         {
             "name": "mark_as_spam",
-            "description": "Mark one or more emails as spam by moving them to the account's Junk folder, auto-detected via the RFC 6154 \\Junk flag (falling back to common names like Junk, Spam, or [Gmail]/Spam). The spam/ham judgment itself is made by the caller; this tool only performs the move. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
+            "description": "Mark one or more emails as spam by moving them to the account's Junk folder, auto-detected via the RFC 6154 \\Junk flag (falling back to common names like Junk, Spam, or [Gmail]/Spam). The spam/ham judgment itself is made by the caller; this tool only performs the move. It does not train the provider's spam filter, report the sender, or affect sender reputation. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -1720,7 +1720,7 @@
         },
         {
             "name": "mark_as_ham",
-            "description": "Mark one or more emails as ham (not spam) by moving them out of the account's Junk folder back to INBOX. If mailbox is omitted, the Junk folder is auto-detected the same way mark_as_spam finds it. The spam/ham judgment itself is made by the caller; this tool only performs the move. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
+            "description": "Mark one or more emails as ham (not spam) by moving them out of the account's Junk folder, auto-detected the same way mark_as_spam finds it, back to INBOX. The spam/ham judgment itself is made by the caller; this tool only performs the move. It does not train the provider's spam filter or affect sender reputation. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -1740,20 +1740,6 @@
                         "minItems": 1,
                         "title": "Email Ids",
                         "type": "array"
-                    },
-                    "mailbox": {
-                        "anyOf": [
-                            {
-                                "maxLength": 1024,
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "The source mailbox containing the emails. Defaults to the auto-detected Junk folder.",
-                        "title": "Mailbox"
                     }
                 },
                 "required": ["account_name", "email_ids"],

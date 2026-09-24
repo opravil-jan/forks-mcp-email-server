@@ -726,17 +726,7 @@ class TestMcpTools:
         with patch("mcp_email_server.app.mark_as_ham_command", command_handler):
             result = await mark_as_ham("test_account", ["12345"])
         assert result == "Successfully marked 1 email(s) as ham (moved from Junk to INBOX)"
-        assert command_handler.await_args.args[0].source_mailbox is None
-
-    @pytest.mark.asyncio
-    async def test_mark_as_ham_with_explicit_mailbox(self):
-        command_handler = AsyncMock(
-            return_value=MarkAsHamMutationOutcome(_batch_outcome(succeeded=("12345",)), "Suspected")
-        )
-        with patch("mcp_email_server.app.mark_as_ham_command", command_handler):
-            result = await mark_as_ham("test_account", ["12345"], "Suspected")
-        assert result == "Successfully marked 1 email(s) as ham (moved from Suspected to INBOX)"
-        assert command_handler.await_args.args[0].source_mailbox == "Suspected"
+        assert command_handler.await_args.args[0].email_ids == ("12345",)
 
     @pytest.mark.asyncio
     async def test_mark_as_ham_with_failures(self):
