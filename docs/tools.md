@@ -529,14 +529,19 @@ Marks messages as spam by moving them to the account's Junk mailbox. The
 server first uses the RFC 6154 `\Junk` mailbox flag and then falls back to
 `Junk`, `Spam`, `[Gmail]/Spam`, `Junk E-mail`, or `Junk Email`. The spam/ham
 judgment itself is made by the caller; this tool only performs the move, using
-the same native-MOVE or safe UIDPLUS fallback rules as `move_emails`.
+the same native-MOVE or safe UIDPLUS fallback rules as `move_emails`. It does
+not train the provider's spam filter, report the sender, or affect sender
+reputation — those are provider-side effects this tool cannot guarantee.
 
 ### `mark_as_ham`
 
-Marks messages as not-spam by moving them out of the account's Junk mailbox
-back to `INBOX`. If `mailbox` is omitted, the Junk mailbox is auto-detected
-the same way `mark_as_spam` finds it; an explicit `mailbox` skips discovery
-entirely. Uses the same move contract as `mark_as_spam`.
+Marks messages as not-spam by moving them out of the account's auto-detected
+Junk mailbox back to `INBOX`, using the same discovery and move contract as
+`mark_as_spam`. Unlike `mark_as_spam`'s source, the Junk mailbox here cannot
+be overridden with an explicit mailbox name — to move messages between
+arbitrary folders, use `move_emails` instead. As with `mark_as_spam`, this
+tool only performs the move and has no provider-side spam-filter-training
+effect.
 
 ### `delete_emails`
 

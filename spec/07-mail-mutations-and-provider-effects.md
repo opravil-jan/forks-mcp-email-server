@@ -124,12 +124,17 @@ policy and evidence; it is not silently attempted after an unsafe fallback.
 
 Marking a message as spam or as ham is not a server-side classification
 decision; the caller supplies the judgment and the server only relocates the
-message. Marking as spam resolves the Junk mailbox as a destination policy
-and follows the same move contract as Archive. Marking as ham follows the
-identical contract in reverse: the Junk mailbox is resolved as the source
-(auto-detected the same way, or supplied explicitly) and `INBOX` is the fixed
-destination. Neither direction sets a new IMAP flag or keyword; the mutation
-is move-only.
+message. Neither direction trains a provider spam filter, reports the sender,
+or affects sender reputation — those are provider-side effects this contract
+does not attempt to guarantee. Marking as spam resolves the Junk mailbox as a
+destination policy and follows the same move contract as Archive. Marking as
+ham follows the identical contract in reverse: the Junk mailbox is always
+auto-detected as the source, the same way marking as spam finds it, and
+`INBOX` is the fixed destination — unlike Archive's and spam-marking's source
+side, ham-marking's source cannot be overridden with an explicit mailbox; a
+caller needing to move between arbitrary folders uses the general move
+contract instead. Neither direction sets a new IMAP flag or keyword; the
+mutation is move-only.
 
 ## Delete and Scoped Expunge
 
@@ -379,8 +384,7 @@ enter public errors.
     read-only, and unknown keywords with the same effect evidence and metadata
     invalidation rules as other mailbox mutations.
 15. Spam/ham marking tests prove Junk-folder auto-detection via the RFC 6154
-    `\Junk` flag and name fallback, that marking ham without an explicit
-    mailbox auto-detects the same Junk folder as the move source, that an
-    explicit mailbox skips discovery, and that a missing distinct Junk folder
-    fails before any move effect with the RFC 6154 `\Junk` flag and common
-    names named in the error.
+    `\Junk` flag and name fallback, that marking ham always auto-detects the
+    Junk folder as the move source with no caller override available, and
+    that a missing distinct Junk folder fails before any move effect with the
+    RFC 6154 `\Junk` flag and common names named in the error.
