@@ -70,14 +70,14 @@ for client discovery and configuration migration steps.
 Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 `idempotentHint`, and `openWorldHint` values:
 
-| Tools                                                                                           | Read-only | Destructive | Idempotent | Open world |
-| ----------------------------------------------------------------------------------------------- | --------- | ----------- | ---------- | ---------- |
-| `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders`, `list_email_tags` | yes       | no          | yes        | no         |
-| `list_emails_metadata`, `list_mailboxes`, `get_attachment_content`                              | yes       | no          | yes        | yes        |
-| `get_emails_content`                                                                            | no        | no          | yes        | yes        |
-| `send_email`, `forward_email`, `save_to_mailbox`                                                | no        | no          | no         | yes        |
-| `set_email_flags`, `set_email_tags`, `mark_emails_as_read`                                      | no        | no          | yes        | yes        |
-| `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`                         | no        | yes         | no         | yes        |
+| Tools                                                                                                  | Read-only | Destructive | Idempotent | Open world |
+| ------------------------------------------------------------------------------------------------------ | --------- | ----------- | ---------- | ---------- |
+| `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders`, `list_email_tags`        | yes       | no          | yes        | no         |
+| `list_emails_metadata`, `list_mailboxes`, `get_attachment_content`                                     | yes       | no          | yes        | yes        |
+| `get_emails_content`                                                                                   | no        | no          | yes        | yes        |
+| `send_email`, `forward_email`, `save_to_mailbox`                                                       | no        | no          | no         | yes        |
+| `set_email_flags`, `set_email_tags`, `mark_emails_as_read`                                             | no        | no          | yes        | yes        |
+| `delete_emails`, `move_emails`, `archive_emails`, `mark_as_spam`, `mark_as_ham`, `download_attachment` | no        | yes         | no         | yes        |
 
 `get_emails_content` is conservatively non-read-only because
 `mark_as_read=true` changes remote flags. Download is destructive because the
@@ -522,6 +522,21 @@ Moves messages to the account's archive mailbox. The server first uses the RFC
 6154 `\Archive` mailbox flag and then falls back to `Archive`, `Archives`, or
 `[Gmail]/All Mail`. Archive uses the same native-MOVE or safe UIDPLUS fallback
 rules as `move_emails`.
+
+### `mark_as_spam`
+
+Marks messages as spam by moving them to the account's Junk mailbox. The
+server first uses the RFC 6154 `\Junk` mailbox flag and then falls back to
+`Junk`, `Spam`, `[Gmail]/Spam`, `Junk E-mail`, or `Junk Email`. The spam/ham
+judgment itself is made by the caller; this tool only performs the move, using
+the same native-MOVE or safe UIDPLUS fallback rules as `move_emails`.
+
+### `mark_as_ham`
+
+Marks messages as not-spam by moving them out of the account's Junk mailbox
+back to `INBOX`. If `mailbox` is omitted, the Junk mailbox is auto-detected
+the same way `mark_as_spam` finds it; an explicit `mailbox` skips discovery
+entirely. Uses the same move contract as `mark_as_spam`.
 
 ### `delete_emails`
 

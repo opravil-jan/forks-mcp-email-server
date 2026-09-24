@@ -21,6 +21,8 @@ from mcp_email_server.application.mutations import (
     ForwardCommand,
     ForwardSource,
     ForwardSourcePart,
+    MarkAsHamCommand,
+    MarkAsSpamCommand,
     MarkReadCommand,
     MoveCommand,
     MutableEmailFlag,
@@ -387,6 +389,77 @@ async def test_archive_reopens_authority_between_discovery_and_move() -> None:
     assert factory.open.call_count == 2
     provider.move.assert_awaited_once()
     projection.invalidate.assert_awaited_once_with(("INBOX", "Archive"))
+
+
+@pytest.mark.asyncio
+async def test_mark_as_spam_reopens_authority_between_discovery_and_move() -> None:
+    provider = MagicMock()
+    provider.find_junk_mailbox = AsyncMock(return_value="Junk")
+    provider.move = AsyncMock(return_value=_batch(TargetMutationOutcome("11", "succeeded")))
+    services, _, factory, projection = _services(provider=provider)
+
+    result = await services.mark_as_spam.execute(MarkAsSpamCommand("primary", ("11",)))
+
+    assert result.junk_mailbox == "Junk"
+    assert factory.open.call_count == 2
+    provider.move.assert_awaited_once()
+    move_command = provider.move.await_args.args[0]
+    assert move_command.source_mailbox == "INBOX"
+    assert move_command.destination_mailbox == "Junk"
+    projection.invalidate.assert_awaited_once_with(("INBOX", "Junk"))
+
+
+@pytest.mark.asyncio
+async def test_mark_as_ham_auto_detects_junk_folder_as_source() -> None:
+    provider = MagicMock()
+    provider.find_junk_mailbox = AsyncMock(return_value="Junk")
+    provider.move = AsyncMock(return_value=_batch(TargetMutationOutcome("11", "succeeded")))
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.mark_as_ham.execute(MarkAsHamCommand("primary", ("11",)))
+
+    assert result.junk_mailbox == "Junk"
+    provider.find_junk_mailbox.assert_awaited_once_with("INBOX")
+    move_command = provider.move.await_args.args[0]
+    assert move_command.source_mailbox == "Junk"
+    assert move_command.destination_mailbox == "INBOX"
+    projection.invalidate.assert_awaited_once_with(("Junk", "INBOX"))
+
+
+@pytest.mark.asyncio
+async def test_mark_as_ham_uses_explicit_source_mailbox_without_discovery() -> None:
+    provider = MagicMock()
+    provider.find_junk_mailbox = AsyncMock(side_effect=AssertionError("must not auto-detect"))
+    provider.move = AsyncMock(return_value=_batch(TargetMutationOutcome("11", "succeeded")))
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.mark_as_ham.execute(MarkAsHamCommand("primary", ("11",), source_mailbox="Suspected"))
+
+    assert result.junk_mailbox == "Suspected"
+    provider.find_junk_mailbox.assert_not_awaited()
+    move_command = provider.move.await_args.args[0]
+    assert move_command.source_mailbox == "Suspected"
+    assert move_command.destination_mailbox == "INBOX"
+    projection.invalidate.assert_awaited_once_with(("Suspected", "INBOX"))
+
+
+@pytest.mark.asyncio
+async def test_mark_as_spam_discovery_timeout_raises_provider_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.01),
+    )
+    provider = MagicMock()
+
+    async def _hang(_source_mailbox: str) -> str:
+        await asyncio.sleep(10)
+        return "Junk"
+
+    provider.find_junk_mailbox = _hang
+    services, _, _, _ = _services(provider=provider)
+    with pytest.raises(MutationProviderError, match="junk mailbox discovery timed out"):
+        await services.mark_as_spam.execute(MarkAsSpamCommand("primary", ("11",)))
 
 
 @pytest.mark.asyncio

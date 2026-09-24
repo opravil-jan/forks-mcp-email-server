@@ -173,6 +173,24 @@ async def test_mutation_adapter_returns_discovered_archive_mailbox() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("junk_mailbox", [None, "INBOX"])
+async def test_mutation_adapter_requires_distinct_junk_mailbox(junk_mailbox: str | None) -> None:
+    handler = MagicMock()
+    handler._find_junk_folder = AsyncMock(return_value=junk_mailbox)
+
+    with pytest.raises(ValueError, match="No distinct Junk folder found"):
+        await ClassicMutationProvider(handler).find_junk_mailbox("INBOX")
+
+
+@pytest.mark.asyncio
+async def test_mutation_adapter_returns_discovered_junk_mailbox() -> None:
+    handler = MagicMock()
+    handler._find_junk_folder = AsyncMock(return_value="Junk")
+
+    assert await ClassicMutationProvider(handler).find_junk_mailbox("INBOX") == "Junk"
+
+
+@pytest.mark.asyncio
 async def test_mutation_adapter_rejects_send_without_smtp() -> None:
     handler = MagicMock()
     handler.outgoing_client = None

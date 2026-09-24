@@ -23,6 +23,10 @@ from mcp_email_server.application.mutations import (
     DeleteCommand,
     FlagOperation,
     ForwardCommand,
+    MarkAsHamCommand,
+    MarkAsHamMutationOutcome,
+    MarkAsSpamCommand,
+    MarkAsSpamMutationOutcome,
     MarkReadCommand,
     MoveCommand,
     MutableEmailFlag,
@@ -105,6 +109,14 @@ async def move_emails_command(command: MoveCommand) -> BatchMutationOutcome:
 
 async def archive_emails_command(command: ArchiveCommand) -> ArchiveMutationOutcome:
     return await get_application_runtime().mutations.archive.execute(command)
+
+
+async def mark_as_spam_command(command: MarkAsSpamCommand) -> MarkAsSpamMutationOutcome:
+    return await get_application_runtime().mutations.mark_as_spam.execute(command)
+
+
+async def mark_as_ham_command(command: MarkAsHamCommand) -> MarkAsHamMutationOutcome:
+    return await get_application_runtime().mutations.mark_as_ham.execute(command)
 
 
 async def get_email_content_query(query: GetEmailContentQuery) -> EmailContentBatchResponse:
@@ -1119,6 +1131,78 @@ async def archive_emails(
     if len(succeeded) == len(email_ids) and not outcome.batch.reconciliation_needed:
         return f"Successfully archived {len(succeeded)} email(s) to {outcome.archive_mailbox}"
     return f"Archive result [{_tagged_batch_result(outcome.batch)}; mailbox: {outcome.archive_mailbox}]"
+
+
+@mcp.tool(
+    description="Mark one or more emails as spam by moving them to the account's Junk folder, "
+    "auto-detected via the RFC 6154 \\Junk flag (falling back to common names like Junk, Spam, "
+    "or [Gmail]/Spam). The spam/ham judgment itself is made by the caller; this tool only performs "
+    "the move. Use list_emails_metadata first. Partial or ambiguous effects report per-ID "
+    "succeeded/failed/unknown status and are not retried automatically.",
+    annotations=_DESTRUCTIVE_REMOTE_MUTATION,
+)
+async def mark_as_spam(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to mark as spam (obtained from list_emails_metadata).",
+        ),
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The source mailbox containing the emails.",
+        ),
+    ] = "INBOX",
+) -> str:
+    outcome = await mark_as_spam_command(MarkAsSpamCommand(account_name, tuple(email_ids), mailbox))
+    succeeded = outcome.batch.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.batch.reconciliation_needed:
+        return f"Successfully marked {len(succeeded)} email(s) as spam (moved to {outcome.junk_mailbox})"
+    return f"Mark-as-spam result [{_tagged_batch_result(outcome.batch)}; mailbox: {outcome.junk_mailbox}]"
+
+
+@mcp.tool(
+    description="Mark one or more emails as ham (not spam) by moving them out of the account's Junk "
+    "folder back to INBOX. If mailbox is omitted, the Junk folder is auto-detected the same way "
+    "mark_as_spam finds it. The spam/ham judgment itself is made by the caller; this tool only "
+    "performs the move. Partial or ambiguous effects report per-ID succeeded/failed/unknown status "
+    "and are not retried automatically.",
+    annotations=_DESTRUCTIVE_REMOTE_MUTATION,
+)
+async def mark_as_ham(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to mark as ham (obtained from list_emails_metadata).",
+        ),
+    ],
+    mailbox: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The source mailbox containing the emails. Defaults to the auto-detected Junk folder.",
+        ),
+    ] = None,
+) -> str:
+    outcome = await mark_as_ham_command(MarkAsHamCommand(account_name, tuple(email_ids), mailbox))
+    succeeded = outcome.batch.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.batch.reconciliation_needed:
+        return f"Successfully marked {len(succeeded)} email(s) as ham (moved from {outcome.junk_mailbox} to INBOX)"
+    return f"Mark-as-ham result [{_tagged_batch_result(outcome.batch)}; mailbox: {outcome.junk_mailbox}]"
 
 
 @mcp.tool(

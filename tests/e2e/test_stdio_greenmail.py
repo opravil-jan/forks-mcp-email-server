@@ -1073,7 +1073,7 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
     """Exercise the current public MCP/CLI/config boundary against real mail sockets."""
     _wait_until_ready()
     _ensure_empty_mailboxes(ALICE, ["INBOX", "Sent", "Drafts", "Archive"])
-    _ensure_empty_mailboxes(BOB, ["INBOX", "Drafts", "Archive"])
+    _ensure_empty_mailboxes(BOB, ["INBOX", "Drafts", "Archive", "Junk"])
 
     run_id = uuid.uuid4().hex
     sent_subject = f"mcp-e2e-send-{run_id}"
@@ -1128,6 +1128,8 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
                 "mark_emails_as_read",
                 "move_emails",
                 "archive_emails",
+                "mark_as_spam",
+                "mark_as_ham",
                 "list_mailboxes",
                 "download_attachment",
                 "get_attachment_content",
@@ -1413,6 +1415,29 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
             assert archive_result["result"] == "Successfully archived 1 email(s) to Archive"
             assert _find_message(BOB, "INBOX", archive_subject) is None
             _wait_for_message(BOB, "Archive", archive_subject)
+
+            spam_subject = f"mcp-e2e-spam-{run_id}"
+            _seed_message(spam_subject, "This looks like spam")
+            _wait_for_message(BOB, "INBOX", spam_subject)
+            spam_metadata = await _metadata_for_subject(session, "bob", spam_subject)
+            spam_result = await _call_tool(
+                session,
+                "mark_as_spam",
+                {"account_name": "bob", "email_ids": [spam_metadata["email_id"]]},
+            )
+            assert spam_result["result"] == "Successfully marked 1 email(s) as spam (moved to Junk)"
+            assert _find_message(BOB, "INBOX", spam_subject) is None
+            _wait_for_message(BOB, "Junk", spam_subject)
+
+            ham_metadata = await _metadata_for_subject_in_mailbox(session, "bob", "Junk", spam_subject)
+            ham_result = await _call_tool(
+                session,
+                "mark_as_ham",
+                {"account_name": "bob", "email_ids": [ham_metadata["email_id"]]},
+            )
+            assert ham_result["result"] == "Successfully marked 1 email(s) as ham (moved from Junk to INBOX)"
+            assert _find_message(BOB, "Junk", spam_subject) is None
+            _wait_for_message(BOB, "INBOX", spam_subject)
 
             draft_subject = f"mcp-e2e-draft-{run_id}"
             draft_body = "Draft body created through MCP"

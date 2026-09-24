@@ -120,6 +120,17 @@ Archive resolves an explicit destination policy and then follows the same move
 contract. Destination creation, if supported, is a separate effect with its own
 policy and evidence; it is not silently attempted after an unsafe fallback.
 
+## Spam and Ham Marking
+
+Marking a message as spam or as ham is not a server-side classification
+decision; the caller supplies the judgment and the server only relocates the
+message. Marking as spam resolves the Junk mailbox as a destination policy
+and follows the same move contract as Archive. Marking as ham follows the
+identical contract in reverse: the Junk mailbox is resolved as the source
+(auto-detected the same way, or supplied explicitly) and `INBOX` is the fixed
+destination. Neither direction sets a new IMAP flag or keyword; the mutation
+is move-only.
+
 ## Delete and Scoped Expunge
 
 Delete marks only selected UIDs and removes only those targets with a scoped
@@ -318,9 +329,9 @@ enter public errors.
    unknown, cancelled-before-effect, and local projection warning.
 3. Body retrieval does not mark read by default; explicit mark-read and bounded
    approved flag additions/removals use one shared effect-aware implementation.
-4. Move/archive/delete use native or proven scoped primitives, and tests prove no
-   code path issues bare `EXPUNGE` or marks deleted before rejecting unsafe
-   capability.
+4. Move/archive/spam-ham-marking/delete use native or proven scoped primitives,
+   and tests prove no code path issues bare `EXPUNGE` or marks deleted before
+   rejecting unsafe capability.
 5. Provider success remains success when projection persistence fails.
 6. SMTP and sent-copy outcomes are independently represented, and sent-copy
    failure/unknown never causes SMTP replay. Tests prove display names are safely
@@ -367,3 +378,9 @@ enter public errors.
     multiple UIDs, non-writable rejection, and preservation of system,
     read-only, and unknown keywords with the same effect evidence and metadata
     invalidation rules as other mailbox mutations.
+15. Spam/ham marking tests prove Junk-folder auto-detection via the RFC 6154
+    `\Junk` flag and name fallback, that marking ham without an explicit
+    mailbox auto-detects the same Junk folder as the move source, that an
+    explicit mailbox skips discovery, and that a missing distinct Junk folder
+    fails before any move effect with the RFC 6154 `\Junk` flag and common
+    names named in the error.
