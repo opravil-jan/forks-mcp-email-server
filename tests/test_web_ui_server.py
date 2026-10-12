@@ -111,6 +111,92 @@ def test_posix_listener_keeps_address_reuse(monkeypatch) -> None:
     assert listener.options == [(server_module.socket.SOL_SOCKET, server_module.socket.SO_REUSEADDR, 1)]
 
 
+@pytest.mark.parametrize("port", [-1, 65536])
+def test_bound_socket_rejects_out_of_range_port(port: int) -> None:
+    with pytest.raises(ValueError, match="UI port must be between 0 and 65535"):
+        server_module._bound_socket(port)
+
+
+def test_bound_socket_closes_listener_and_reraises_on_bind_failure(monkeypatch) -> None:
+    closed = MagicMock()
+
+    class _FailingListener(_RecordingListener):
+        def bind(self, address: tuple[str, int]) -> None:
+            raise OSError("synthetic bind failure")
+
+        def close(self) -> None:
+            closed()
+
+    monkeypatch.setattr(server_module.socket, "socket", lambda family, kind: _FailingListener(family, kind))
+
+    with pytest.raises(OSError, match="synthetic bind failure"):
+        server_module._bound_socket(0)
+
+    closed.assert_called_once()
+
+
+def test_interactive_terminal_prefers_stderr_when_both_are_ttys(monkeypatch) -> None:
+    stderr = MagicMock(spec_set=["isatty"])
+    stderr.isatty.return_value = True
+    stdout = MagicMock(spec_set=["isatty"])
+    stdout.isatty.return_value = True
+    monkeypatch.setattr(server_module.sys, "stderr", stderr)
+    monkeypatch.setattr(server_module.sys, "stdout", stdout)
+
+    assert server_module._interactive_terminal() is stderr
+
+
+def test_interactive_terminal_falls_back_to_stdout() -> None:
+    class _Stream:
+        def __init__(self, is_tty: bool) -> None:
+            self._is_tty = is_tty
+
+        def isatty(self) -> bool:
+            return self._is_tty
+
+    import mcp_email_server.web_ui.server as server_module_under_test
+
+    original_stderr, original_stdout = sys.stderr, sys.stdout
+    try:
+        sys.stderr = _Stream(False)  # type: ignore[assignment]
+        sys.stdout = _Stream(True)  # type: ignore[assignment]
+        assert server_module_under_test._interactive_terminal() is sys.stdout
+    finally:
+        sys.stderr, sys.stdout = original_stderr, original_stdout
+
+
+def test_interactive_terminal_returns_none_without_any_tty(monkeypatch) -> None:
+    class _Stream:
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr(server_module.sys, "stderr", _Stream())
+    monkeypatch.setattr(server_module.sys, "stdout", _Stream())
+
+    assert server_module._interactive_terminal() is None
+
+
+def test_server_falls_back_to_handoff_when_browser_open_raises(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class FakeServer:
+        def __init__(self, configuration) -> None:
+            observed["state"] = configuration.app.state.local_ui
+
+        def run(self, *, sockets) -> None:
+            assert sockets[0].getsockname()[0] == "127.0.0.1"
+
+    terminal = io.StringIO()
+    monkeypatch.setattr(server_module.uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(server_module.webbrowser, "open", MagicMock(side_effect=OSError("no display")))
+    monkeypatch.setattr(server_module, "_interactive_terminal", lambda: terminal)
+
+    server_module.run_local_ui(port=0)
+
+    state = observed["state"]
+    assert f"{state.origin}{state.route_prefix}/#bootstrap=" in terminal.getvalue()
+
+
 def test_server_prebinds_exact_ipv4_loopback_opens_fragment_and_hides_token(monkeypatch, capsys) -> None:
     observed: dict[str, object] = {}
     freeze = MagicMock()

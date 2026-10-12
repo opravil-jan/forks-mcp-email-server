@@ -22,9 +22,13 @@ from aiosmtplib.errors import SMTPNotSupported
 
 from mcp_email_server.emails import charsets
 from mcp_email_server.emails.classic import (
+    MAX_METADATA_UID_SEARCH_BYTES,
     EmailClient,
     ImapTransportError,
+    MetadataProviderObservationError,
+    MetadataQueryTooBroadError,
     _append_message,
+    _imap_status,
     _ImapAppendMode,
     _ImapSearchLiteral,
     _message_requires_smtputf8,
@@ -422,6 +426,42 @@ async def test_uid_search_treats_icloud_completion_only_response_as_empty():
     assert response.result == "OK"
     assert response.lines == [b"SEARCH completed (took 2 ms)"]
     assert _normalize_search_uids(response.lines) == []
+
+
+@pytest.mark.parametrize("messages", [[], [b""], [[]], None, ()])
+def test_normalize_search_uids_returns_empty_for_missing_or_empty_payload(messages):
+    assert _normalize_search_uids(messages) == []
+
+
+def test_normalize_search_uids_rejects_oversized_bytes_payload():
+    # The byte-length guard runs before token parsing, so filler content is fine.
+    oversized = b"1 " * (MAX_METADATA_UID_SEARCH_BYTES // 2 + 1)
+    assert len(oversized) > MAX_METADATA_UID_SEARCH_BYTES
+
+    with pytest.raises(MetadataQueryTooBroadError, match="query_too_broad"):
+        _normalize_search_uids([oversized])
+
+
+def test_normalize_search_uids_rejects_oversized_str_payload():
+    oversized = "1 " * (MAX_METADATA_UID_SEARCH_BYTES // 2 + 1)
+    assert len(oversized.encode("utf-8")) > MAX_METADATA_UID_SEARCH_BYTES
+
+    with pytest.raises(MetadataQueryTooBroadError, match="query_too_broad"):
+        _normalize_search_uids([oversized])
+
+
+def test_normalize_search_uids_accepts_str_payload():
+    assert _normalize_search_uids(["3 1 2"]) == ["3", "1", "2"]
+
+
+def test_normalize_search_uids_rejects_non_bytes_non_str_payload():
+    with pytest.raises(MetadataProviderObservationError, match="invalid UID search results"):
+        _normalize_search_uids([12345])
+
+
+def test_imap_status_falls_back_to_raw_value_for_plain_strings():
+    assert _imap_status("OK") == "OK"
+    assert _imap_status("completely unexpected provider text") == "UNKNOWN"
 
 
 @pytest.mark.asyncio

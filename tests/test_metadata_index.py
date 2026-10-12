@@ -200,6 +200,10 @@ def test_successive_partial_windows_keep_projection_at_retention_bound(tmp_path:
         ([_email(1), _email(1)], 2, 2, True, "duplicate UIDs"),
         ([_email(1)], 2, 2, True, "inconsistent with provider state"),
         ([_email(2)], 2, 1, True, "inconsistent with provider state"),
+        ([{**_email(1), "date": "not-a-datetime"}], 2, 1, True, "metadata date is invalid"),
+        ([{**_email(1), "_internal_date": "not-a-datetime"}], 2, 1, True, "internal date is invalid"),
+        ([{**_email(1), "email_id": "not-a-number"}], 2, 1, True, "UID is invalid"),
+        ([{**_email(1), "email_id": "0"}], 2, 1, True, "UID is invalid"),
     ],
 )
 def test_snapshot_write_rejects_unbounded_or_inconsistent_coverage(
@@ -230,6 +234,80 @@ def test_snapshot_write_rejects_unbounded_or_inconsistent_coverage(
     with closing(sqlite3.connect(index.path)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM message_metadata_projection").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM index_coverage").fetchone()[0] == 0
+
+
+def test_write_snapshot_normalizes_a_naive_message_date_to_utc(tmp_path: Path) -> None:
+    """A provider-supplied date without tzinfo must still round-trip as UTC,
+    not raise or silently misinterpret the local offset."""
+    naive_email = {**_email(1), "date": datetime(2026, 7, 22, 4, 0)}
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    account_id = index.resolve_operational_account(_account())
+
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=[],
+        uidvalidity=10,
+        uidnext=2,
+        message_count=1,
+        emails=[naive_email],
+        complete=True,
+        observed_at=NOW,
+    )
+
+    snapshot = index.read_complete(
+        account_id,
+        "INBOX",
+        uidvalidity=10,
+        uidnext=2,
+        message_count=1,
+    )
+    assert snapshot is not None
+    assert snapshot.emails[0]["date"] == NOW
+
+
+def test_write_snapshot_clears_projection_for_an_empty_mailbox(tmp_path: Path) -> None:
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    account_id = index.resolve_operational_account(_account())
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=[],
+        uidvalidity=10,
+        uidnext=3,
+        message_count=2,
+        emails=[_email(1), _email(2)],
+        complete=True,
+        observed_at=NOW,
+    )
+
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=[],
+        uidvalidity=10,
+        uidnext=3,
+        message_count=0,
+        emails=[],
+        complete=True,
+        observed_at=NOW + timedelta(minutes=1),
+    )
+
+    with closing(sqlite3.connect(index.path)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM message_metadata_projection").fetchone()[0] == 0
+    assert (
+        index.read_complete(
+            account_id,
+            "INBOX",
+            uidvalidity=10,
+            uidnext=3,
+            message_count=0,
+        )
+        is not None
+    )
 
 
 def test_uidvalidity_change_invalidates_old_projection_before_partial_write(tmp_path: Path) -> None:
@@ -273,6 +351,101 @@ def test_uidvalidity_change_invalidates_old_projection_before_partial_write(tmp_
     with closing(sqlite3.connect(index.path)) as connection:
         rows = connection.execute("SELECT uidvalidity, uid, subject FROM message_metadata_projection").fetchall()
     assert rows == [(11, 1, "New epoch")]
+
+
+def test_read_complete_returns_none_when_row_count_contradicts_coverage(tmp_path: Path) -> None:
+    """A coverage row claiming COMPLETE/message_count=N whose persisted rows no
+    longer sum to N (e.g. a row lost outside the normal write path) must not be
+    served as a complete, consistent snapshot."""
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    account_id = index.resolve_operational_account(_account())
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=[],
+        uidvalidity=10,
+        uidnext=3,
+        message_count=2,
+        emails=[_email(1), _email(2)],
+        complete=True,
+        observed_at=NOW,
+    )
+    with closing(sqlite3.connect(index.path)) as connection:
+        connection.execute("DELETE FROM message_metadata_projection WHERE uid = 2")
+        connection.commit()
+
+    assert (
+        index.read_complete(
+            account_id,
+            "INBOX",
+            uidvalidity=10,
+            uidnext=3,
+            message_count=2,
+        )
+        is None
+    )
+
+
+def test_read_complete_rejects_malformed_stored_json(tmp_path: Path) -> None:
+    """A row whose recipients/attachments/flags JSON no longer deserializes to a
+    list[str] is a data-integrity failure, not silently-wrong data."""
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    account_id = index.resolve_operational_account(_account())
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=[],
+        uidvalidity=10,
+        uidnext=2,
+        message_count=1,
+        emails=[_email(1)],
+        complete=True,
+        observed_at=NOW,
+    )
+    with closing(sqlite3.connect(index.path)) as connection:
+        connection.execute("UPDATE message_metadata_projection SET recipients_json = '[1, 2]' WHERE uid = 1")
+        connection.commit()
+
+    with pytest.raises(MetadataIndexError, match="Indexed metadata is malformed"):
+        index.read_complete(
+            account_id,
+            "INBOX",
+            uidvalidity=10,
+            uidnext=2,
+            message_count=1,
+        )
+
+
+def test_invalidate_mailboxes_is_a_no_op_for_an_empty_selection(tmp_path: Path) -> None:
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    account_id = index.resolve_operational_account(_account())
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=[],
+        uidvalidity=10,
+        uidnext=2,
+        message_count=1,
+        emails=[_email(1)],
+        complete=True,
+        observed_at=NOW,
+    )
+
+    index.invalidate_mailboxes(account_id, ())
+
+    assert (
+        index.read_complete(
+            account_id,
+            "INBOX",
+            uidvalidity=10,
+            uidnext=2,
+            message_count=1,
+        )
+        is not None
+    )
 
 
 def test_operational_index_rejects_insecure_parent_before_creation(tmp_path: Path) -> None:
@@ -361,6 +534,19 @@ def test_legacy_version_marker_must_match_canonical_definition(tmp_path: Path) -
         index.ensure_ready()
 
 
+def test_legacy_schema_version_1_migrates_to_current_on_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "private" / "operational.sqlite3"
+    MetadataIndex(path, "legacy").ensure_ready()
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("UPDATE schema_metadata SET version = 1 WHERE singleton = 1")
+        connection.commit()
+
+    MetadataIndex(path, "legacy").ensure_ready()
+
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION
+
+
 def test_legacy_operational_database_rejects_unsupported_version_before_wal(tmp_path: Path) -> None:
     path = tmp_path / "private" / "operational.sqlite3"
     index = MetadataIndex(path, "legacy")
@@ -444,6 +630,36 @@ def test_managed_catalog_rejects_unsupported_schema_version(tmp_path: Path) -> N
 
     with pytest.raises(ManagedCatalogError, match="version is unsupported"):
         catalog.catalog_revision()
+
+
+def test_managed_mode_resolves_and_reuses_operational_identity_for_existing_account(tmp_path: Path) -> None:
+    path = tmp_path / "private" / "catalog.sqlite3"
+    catalog = ManagedCatalog.initialize(path)
+    catalog.add_account(
+        name="work",
+        full_name="Work User",
+        email_address="user@example.test",
+        incoming=EmailServer(
+            user_name="user@example.test", password=SecretStr("secret"), host="imap.example.test", port=993
+        ),
+        outgoing=None,
+        tags=(),
+    )
+    index = MetadataIndex(path, "managed")
+
+    operational_id = index.resolve_operational_account(_account())
+
+    assert operational_id
+    assert index.resolve_operational_account(_account()) == operational_id
+
+
+def test_managed_mode_rejects_account_name_with_no_managed_account(tmp_path: Path) -> None:
+    path = tmp_path / "private" / "catalog.sqlite3"
+    ManagedCatalog.initialize(path)
+    index = MetadataIndex(path, "managed")
+
+    with pytest.raises(MetadataIndexError, match="Managed operational account identity is unavailable"):
+        index.resolve_operational_account(_account())
 
 
 def test_managed_baseline_missing_operational_table_fails_closed(tmp_path: Path) -> None:

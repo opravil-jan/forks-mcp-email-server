@@ -16,7 +16,7 @@ from mcp_email_server.application.accounts import (
     EffectiveConfigurationLimitError,
     EffectiveConfigurationQueryService,
 )
-from mcp_email_server.config import EmailServer, EmailSettings
+from mcp_email_server.config import AccountAttributes, EmailServer, EmailSettings, ProviderSettings
 
 
 def _account() -> EmailSettings:
@@ -78,6 +78,43 @@ def test_effective_account_discovery_rejects_oversized_description(monkeypatch) 
         EffectiveAccountQueryService(source).discover()
 
 
+def test_effective_account_discovery_projects_provider_accounts_without_send_or_receive() -> None:
+    source = MagicMock()
+    provider = ProviderSettings(account_name="openai", provider_name="openai", api_key="sk-test")
+    source.list_effective_accounts.return_value = [provider]
+
+    discovered = EffectiveAccountQueryService(source).discover()
+
+    assert discovered[0].model_dump(mode="json") == {
+        "account_name": "openai",
+        "account_type": "provider",
+        "description": "",
+        "email_address": None,
+        "can_receive": False,
+        "can_send": False,
+    }
+
+
+def test_effective_account_discovery_projects_neither_email_nor_provider_as_unknown() -> None:
+    """account_type="unknown" is a declared member of AvailableAccount's Literal
+    contract, not dead code — any account that is neither EmailSettings nor
+    ProviderSettings must still be discoverable, just with no capabilities."""
+    source = MagicMock()
+    bare_account = AccountAttributes(account_name="mystery")
+    source.list_effective_accounts.return_value = [bare_account]
+
+    discovered = EffectiveAccountQueryService(source).discover()
+
+    assert discovered[0].model_dump(mode="json") == {
+        "account_name": "mystery",
+        "account_type": "unknown",
+        "description": "",
+        "email_address": None,
+        "can_receive": False,
+        "can_send": False,
+    }
+
+
 def test_effective_account_query_rejects_count_above_shared_limit(monkeypatch) -> None:
     source = MagicMock()
     source.list_effective_accounts.return_value = [_account().masked(), _account().masked()]
@@ -102,6 +139,49 @@ def test_effective_account_query_rejects_oversized_canonical_result(monkeypatch)
 
     with pytest.raises(EffectiveConfigurationLimitError, match="limit_exceeded"):
         EffectiveAccountQueryService(source).execute()
+
+
+def test_effective_account_discovery_rejects_oversized_canonical_result(monkeypatch) -> None:
+    """discover()'s own AvailableAccount-projection size check is independent of
+    execute()'s earlier AccountAttributes-size check; it must still reject an
+    oversized discovery payload even when the input accounts passed execute()."""
+    source = MagicMock()
+    source.list_effective_accounts.return_value = [_account().masked()]
+    monkeypatch.setattr(accounts_module, "validate_serialized_result", MagicMock(side_effect=[None, ValueError]))
+
+    with pytest.raises(EffectiveConfigurationLimitError, match="account discovery result"):
+        EffectiveAccountQueryService(source).discover()
+
+
+def test_effective_configuration_query_returns_configuration_within_limits() -> None:
+    source = MagicMock()
+    expected = EffectiveConfiguration(
+        accounts=(_account(),),
+        allowed_recipients=("first@example.test",),
+        allowed_senders=(),
+    )
+    source.effective_configuration.return_value = expected
+
+    configuration = EffectiveConfigurationQueryService(source).execute()
+
+    assert configuration == expected
+
+
+def test_effective_configuration_rejects_oversized_canonical_result(monkeypatch) -> None:
+    source = MagicMock()
+    source.effective_configuration.return_value = EffectiveConfiguration(
+        accounts=(),
+        allowed_recipients=("first@example.test",),
+        allowed_senders=(),
+    )
+    monkeypatch.setattr(
+        limits_module,
+        "APPLICATION_LIMITS",
+        replace(limits_module.APPLICATION_LIMITS, serialized_response_bytes=1),
+    )
+
+    with pytest.raises(EffectiveConfigurationLimitError, match="effective configuration result"):
+        EffectiveConfigurationQueryService(source).execute()
 
 
 def test_effective_configuration_rejects_policy_count_above_shared_limit(monkeypatch) -> None:
