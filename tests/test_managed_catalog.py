@@ -581,6 +581,66 @@ def test_locked_keyring_write_is_typed_without_catalog_binding(monkeypatch: pyte
     assert catalog.show_account("alice").incoming_binding == "MISSING"
 
 
+def test_keyring_secret_store_put_wraps_generic_probe_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    def fail_get(_service: str, _locator: str) -> None:
+        raise RuntimeError("synthetic backend transport failure")
+
+    monkeypatch.setattr(keyring, "get_password", fail_get)
+    store = ManagedKeyringSecretStore()
+
+    with pytest.raises(ManagedCatalogError, match="rejected the credential"):
+        store.put("acct:incoming", "secret")
+
+
+def test_keyring_secret_store_put_rejects_an_existing_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda _service, _locator: "already-there")
+    store = ManagedKeyringSecretStore()
+
+    with pytest.raises(ManagedCatalogError, match="already exists"):
+        store.put("acct:incoming", "secret")
+
+
+def test_keyring_secret_store_put_wraps_generic_set_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    def fail_set(_service: str, _locator: str, _value: str) -> None:
+        raise RuntimeError("synthetic backend transport failure")
+
+    monkeypatch.setattr(keyring, "get_password", lambda _service, _locator: None)
+    monkeypatch.setattr(keyring, "set_password", fail_set)
+    store = ManagedKeyringSecretStore()
+
+    with pytest.raises(ManagedCatalogError, match="rejected the credential"):
+        store.put("acct:incoming", "secret")
+
+
+def test_keyring_secret_store_get_wraps_generic_backend_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    def fail_get(_service: str, _locator: str) -> None:
+        raise RuntimeError("synthetic backend transport failure")
+
+    monkeypatch.setattr(keyring, "get_password", fail_get)
+    store = ManagedKeyringSecretStore()
+
+    with pytest.raises(ManagedCatalogError, match="backend is unavailable"):
+        store.get("acct:incoming")
+
+
+def test_keyring_secret_store_get_rejects_a_missing_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda _service, _locator: None)
+    store = ManagedKeyringSecretStore()
+
+    with pytest.raises(ManagedCatalogError, match="credential is missing"):
+        store.get("acct:incoming")
+
+
 @pytest.mark.parametrize("platform", ["linux", "win32"])
 def test_file_backed_platform_default_store_uses_catalog_sqlite_transaction(
     monkeypatch: pytest.MonkeyPatch,

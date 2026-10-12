@@ -487,6 +487,43 @@ def test_smtp_data_transport_enforces_composite_cte_domain(
     assert _classify_smtp_data_transport(message, message.as_bytes(policy=SMTP_POLICY)) == expected
 
 
+def test_smtp_data_transport_finds_nested_invalid_leaf_without_a_binary_sibling() -> None:
+    """A nested 8bit-payload-under-non-8bit-CTE leaf must still fail the whole
+    composite closed as invalid, even when no sibling leaf is independently binary."""
+    message = BytesParser(policy=compat32).parsebytes(
+        b"Content-Type: multipart/mixed; boundary=outer\r\n"
+        b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"caf\xe9\r\n"
+        b"--outer--\r\n"
+    )
+
+    assert _classify_smtp_data_transport(message, message.as_bytes(policy=SMTP_POLICY)) == "invalid"
+
+
+def test_smtp_data_transport_treats_missing_body_separator_as_binary() -> None:
+    """A serialized payload with no header/body separator cannot be classified
+    as safely 7bit; the binary transport path must be required."""
+    message = BytesParser(policy=compat32).parsebytes(b"Content-Type: text/plain\r\n\r\nASCII payload\r\n")
+    message_bytes = b"Content-Type: text/plain\r\nASCII payload"  # no blank-line separator at all
+
+    assert _classify_smtp_data_transport(message, message_bytes) == "binary"
+
+
+def test_smtp_data_transport_rejects_raw_body_high_bit_the_mime_structure_does_not_account_for() -> None:
+    """A capability cannot repair a mismatched CTE: independently of the parsed
+    MIME payload, a high-bit octet in the raw serialized body must still fail
+    closed as invalid rather than trusting the structural 7bit classification."""
+    message = BytesParser(policy=compat32).parsebytes(
+        b"Content-Type: text/plain\r\nContent-Transfer-Encoding: 7bit\r\n\r\nASCII payload\r\n"
+    )
+    message_bytes = b"Content-Type: text/plain\r\nContent-Transfer-Encoding: 7bit\r\n\r\nASCII\xe9 payload\r\n"
+
+    assert _classify_smtp_data_transport(message, message_bytes) == "invalid"
+
+
 @pytest.mark.asyncio
 async def test_smtp_raw_8bit_requires_extension_before_mail(email_server) -> None:
     client = EmailClient(email_server, sender="Sender <sender@example.test>")

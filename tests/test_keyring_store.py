@@ -1483,3 +1483,95 @@ def test_keyring_mode_error_message_is_actionable(tmp_path, monkeypatch):
         assert not cfg.exists() or "hunter2" not in cfg.read_text()
     finally:
         _restore_backend(previous)
+
+
+# --- A backend can fail with something other than PasswordSetError/PasswordDeleteError
+# (a raw backend/transport error). _restore_previous_secret must still be attempted
+# and the original exception must still propagate. ---
+def test_set_secret_restores_and_propagates_on_generic_initial_write_failure():
+    class _GenericErrorOnSet(KeyringBackend):
+        priority = 1
+
+        def __init__(self):
+            super().__init__()
+            self._store = {(SERVICE, "acct1:incoming"): "old-secret"}
+            self.set_calls: list[tuple[str, str]] = []
+
+        def set_password(self, service, username, password):
+            self.set_calls.append((service, username))
+            raise RuntimeError("synthetic backend transport failure")
+
+        def get_password(self, service, username):
+            return self._store.get((service, username))
+
+        def delete_password(self, service, username):
+            raise AssertionError("delete must not be attempted for a non-owner-conflict failure")
+
+    backend = _GenericErrorOnSet()
+    previous = _install_backend(backend)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic backend transport failure"):
+            keyring_store.set_secret("acct1", "incoming", "new-secret")
+    finally:
+        _restore_backend(previous)
+    assert len(backend.set_calls) == 1
+    assert backend.get_password(SERVICE, "acct1:incoming") == "old-secret"
+
+
+def test_set_secret_restores_and_propagates_when_owner_conflict_delete_raises_generic_error():
+    """The owner-conflict recreate path catches PasswordDeleteError specifically;
+    any other exception from delete_password must still trigger rollback and
+    propagate, not be swallowed."""
+
+    class _DeleteRaisesGenericError(_ForeignOwnedThenOkKeyring):
+        def delete_password(self, service, username):
+            self.delete_calls.append((service, username))
+            raise RuntimeError("synthetic backend transport failure during delete")
+
+    backend = _DeleteRaisesGenericError({(SERVICE, "acct1:incoming")})
+    backend._store[(SERVICE, "acct1:incoming")] = "old-secret"
+    previous = _install_backend(backend)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic backend transport failure during delete"):
+            keyring_store.set_secret("acct1", "incoming", "new-secret")
+    finally:
+        _restore_backend(previous)
+    assert backend.delete_calls == [(SERVICE, "acct1:incoming")]
+    # delete_password raised before removing the stored value, so the snapshot taken
+    # before the first write still matches — rollback is a verified no-op, not a blind
+    # write, and the previous credential remains exactly as it was.
+    assert backend.get_password(SERVICE, "acct1:incoming") == "old-secret"
+    assert backend.set_calls == [(SERVICE, "acct1:incoming")]  # only the initial failed modify attempt
+
+
+def test_restore_previous_secret_logs_and_returns_when_readback_fails_and_not_forced():
+    """If the post-failure read-back itself fails and force=False, log and
+    return without attempting a write — writing blind could clobber a value
+    that may already be correct."""
+    from keyring.errors import KeyringError
+
+    class _ReadbackFails(KeyringBackend):
+        priority = 1
+
+        def __init__(self):
+            super().__init__()
+            self.set_calls: list[tuple[str, str]] = []
+
+        def get_password(self, service, username):
+            raise KeyringError("read blocked")
+
+        def set_password(self, service, username, password):
+            self.set_calls.append((service, username))
+
+        def delete_password(self, service, username):
+            raise AssertionError("not used in this test")
+
+    backend = _ReadbackFails()
+    messages: list[str] = []
+    sink_id = loguru_logger.add(lambda msg: messages.append(str(msg)), level="ERROR")
+    try:
+        keyring_store._restore_previous_secret(backend, "acct1:incoming", "old-secret", force=False)
+    finally:
+        loguru_logger.remove(sink_id)
+    assert backend.set_calls == []
+    assert any("could not be verified" in m for m in messages)

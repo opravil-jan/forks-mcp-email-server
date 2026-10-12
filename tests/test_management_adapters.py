@@ -16,6 +16,7 @@ from aiosmtplib.errors import SMTPResponseException
 from mcp_email_server import keyring_store
 from mcp_email_server.adapters import management as management_module
 from mcp_email_server.adapters.management import LocalManagementBackend
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.management import (
     BindingRole,
     ConnectivityCheckError,
@@ -23,8 +24,9 @@ from mcp_email_server.application.management import (
     LegacyAccountSnapshot,
     LegacySourceSnapshot,
     ManagementError,
+    RevisionConflictError,
 )
-from mcp_email_server.bootstrap import BootstrapError, read_bootstrap, write_bootstrap
+from mcp_email_server.bootstrap import BootstrapError, BootstrapRevisionError, read_bootstrap, write_bootstrap
 from mcp_email_server.config import EmailSettings, Settings
 from mcp_email_server.emails.classic import ImapAuthenticationError
 from mcp_email_server.managed import ManagedCatalog
@@ -568,6 +570,67 @@ def test_absent_legacy_file_is_an_empty_import_source(monkeypatch: pytest.Monkey
     assert LocalManagementBackend()._read_legacy_raw() == {}
 
 
+def test_read_legacy_raw_rejects_oversized_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    oversized = tmp_path / "config.toml"
+    oversized.write_bytes(b"x" * (APPLICATION_LIMITS.serialized_response_bytes + 1))
+    monkeypatch.setattr(management_module, "configured_path", lambda: oversized)
+
+    with pytest.raises(ManagementError, match="exceeds the size limit"):
+        LocalManagementBackend()._read_legacy_raw()
+
+
+def test_read_legacy_raw_wraps_malformed_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    malformed = tmp_path / "config.toml"
+    malformed.write_text("not = valid = toml")
+    monkeypatch.setattr(management_module, "configured_path", lambda: malformed)
+
+    with pytest.raises(ManagementError, match="could not be read"):
+        LocalManagementBackend()._read_legacy_raw()
+
+
+def test_write_selection_rejects_stale_legacy_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    backend = LocalManagementBackend()
+    write_bootstrap(mode="legacy", db_path=None, path=config_path, expected_revision=0)
+    stale_source = LegacySourceSnapshot(
+        accounts=(),
+        unsupported_provider_names=(),
+        enable_attachment_download=False,
+        allowed_recipients=("stale@example.test",),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+
+    with pytest.raises(ManagementError, match="Legacy source changed") as caught:
+        backend.write_selection(
+            "legacy",
+            None,
+            expected_revision=1,
+            expected_source=stale_source,
+        )
+
+    assert caught.value.reason == "import_preview_stale"
+
+
+def test_write_selection_maps_bootstrap_revision_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(management_module, "write_bootstrap", Mock(side_effect=BootstrapRevisionError("stale")))
+
+    with pytest.raises(RevisionConflictError):
+        LocalManagementBackend().write_selection("legacy", None, expected_revision=1)
+
+
+def test_write_selection_maps_filesystem_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = OSError("private path detail")
+    monkeypatch.setattr(management_module, "write_bootstrap", Mock(side_effect=failure))
+
+    with pytest.raises(ManagementError, match="could not be updated") as caught:
+        LocalManagementBackend().write_selection("legacy", None, expected_revision=1)
+
+    assert "private path detail" not in str(caught.value)
+    assert caught.value.__cause__ is failure
+
+
 def _guarded_cutover_fixture(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -722,3 +785,90 @@ def test_guarded_import_cutover_commits_only_after_final_source_and_target_check
     assert selected.mode == "managed"
     assert selected.revision == 2
     assert selected.db_path == catalog.path
+
+
+def test_guarded_import_cutover_rejects_stale_bootstrap_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend, source, catalog, config_path = _guarded_cutover_fixture(monkeypatch, tmp_path)
+
+    with pytest.raises(RevisionConflictError):
+        backend.guarded_import_cutover(
+            target_path=catalog.path,
+            expected_bootstrap_revision=999,
+            expected_source=source,
+            expected_resolved_secrets=(),
+            expected_catalog_revision=1,
+            expected_account_revisions=(),
+        )
+
+    assert read_bootstrap(config_path).mode == "legacy"
+
+
+def test_guarded_import_cutover_rejects_stale_source_before_catalog_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend, _source, catalog, config_path = _guarded_cutover_fixture(monkeypatch, tmp_path)
+    stale_source = LegacySourceSnapshot(
+        accounts=(),
+        unsupported_provider_names=(),
+        enable_attachment_download=False,
+        allowed_recipients=("stale@example.test",),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+
+    with pytest.raises(ManagementError, match="preview is stale") as caught:
+        backend.guarded_import_cutover(
+            target_path=catalog.path,
+            expected_bootstrap_revision=1,
+            expected_source=stale_source,
+            expected_resolved_secrets=(),
+            expected_catalog_revision=1,
+            expected_account_revisions=(),
+        )
+
+    assert caught.value.reason == "import_preview_stale"
+    assert read_bootstrap(config_path).mode == "legacy"
+
+
+def test_guarded_import_cutover_rechecks_source_again_inside_catalog_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The source is read and compared once before the catalog writer fence and
+    again inside it, closing the race window between the two reads."""
+    backend, source, catalog, config_path = _guarded_cutover_fixture(monkeypatch, tmp_path)
+    drifted_source = LegacySourceSnapshot(
+        accounts=(),
+        unsupported_provider_names=(),
+        enable_attachment_download=False,
+        allowed_recipients=("drifted@example.test",),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+    original_load = backend.load_legacy_source
+    call_count = 0
+
+    def load_once_then_drift() -> LegacySourceSnapshot:
+        nonlocal call_count
+        call_count += 1
+        return original_load() if call_count == 1 else drifted_source
+
+    monkeypatch.setattr(backend, "load_legacy_source", load_once_then_drift)
+
+    with pytest.raises(ManagementError, match="preview is stale") as caught:
+        backend.guarded_import_cutover(
+            target_path=catalog.path,
+            expected_bootstrap_revision=1,
+            expected_source=source,
+            expected_resolved_secrets=(),
+            expected_catalog_revision=1,
+            expected_account_revisions=(),
+        )
+
+    assert caught.value.reason == "import_preview_stale"
+    assert call_count == 2
+    assert read_bootstrap(config_path).mode == "legacy"
